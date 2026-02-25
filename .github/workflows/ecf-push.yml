@@ -1,0 +1,83 @@
+name: ecr-push-and-run-ecs-task
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: demo-batch
+  ECS_CLUSTER: demo-cluster
+  ECS_CONTAINER_NAME: batch
+  TASK_DEF_FILE: task-definition.json
+  ASSIGN_PUBLIC_IP: ENABLED  # private subnetなら DISABLED
+
+jobs:
+  build_push_and_run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # OIDCでAWSロール引き受け（推奨）
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ECRログイン
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build & Push
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker build -t "${IMAGE_URI}" .
+          docker push "${IMAGE_URI}"
+          echo "image=${IMAGE_URI}" >> "$GITHUB_OUTPUT"
+
+      # タスク定義のimage差し替え（render）
+      - name: Render ECS task definition
+        id: render-task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.TASK_DEF_FILE }}
+          container-name: ${{ env.ECS_CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      # タスク定義を登録
+      - name: Register task definition
+        id: register-task-def
+        run: |
+          aws ecs register-task-definition \
+            --cli-input-json file://${{ steps.render-task-def.outputs.task-definition }}
+
+      # タスクを1回実行（run-task）
+      - name: Run ECS task (Fargate)
+        env:
+          ECS_SUBNETS: ${{ secrets.ECS_SUBNETS }}
+          ECS_SECURITY_GROUPS: ${{ secrets.ECS_SECURITY_GROUPS }}
+        run: |
+          # カンマ区切りをAWS CLI形式に整形
+          SUBNETS_JSON=$(echo "$ECS_SUBNETS" | awk -F, '{for(i=1;i<=NF;i++){printf "\"%s\"%s",$i,(i==NF?"":",")}}')
+          SGS_JSON=$(echo "$ECS_SECURITY_GROUPS" | awk -F, '{for(i=1;i<=NF;i++){printf "\"%s\"%s",$i,(i==NF?"":",")}}')
+
+          aws ecs run-task \
+            --cluster "${ECS_CLUSTER}" \
+            --launch-type FARGATE \
+            --task-definition "${ECR_REPOSITORY}" \
+            --count 1 \
+            --network-configuration "awsvpcConfiguration={subnets=[${SUBNETS_JSON}],securityGroups=[${SGS_JSON}],assignPublicIp=${ASSIGN_PUBLIC_IP}}"

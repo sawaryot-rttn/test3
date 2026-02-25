@@ -1,0 +1,26 @@
+{
+  "family": "demo-batch",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::YOUR_ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "batch",
+      "image": "REPLACED_BY_GITHUB_ACTIONS",
+      "essential": true,
+      "environment": [
+        { "name": "SAMPLE_VAR", "value": "hello-from-ecs" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/demo-batch",
+          "awslogs-region": "ap-northeast-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
